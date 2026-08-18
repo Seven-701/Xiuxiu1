@@ -1,5 +1,5 @@
 import * as Phaser from 'phaser';
-import { addExp, addLingShi, regenQi } from '../playerData.js';
+import { addExp, addLingShi, regenQi, addItem, MATERIALS } from '../playerData.js';
 import { drawPlayer, drawAnimal } from '../sprites.js';
 
 // 游戏主场景：负责"世界"——地图、玩家、灵石、障碍、技能效果
@@ -101,6 +101,7 @@ export default class GameScene extends Phaser.Scene {
 
     // 判断某个点是否离湖太近（用来给别的物体找"能放的地方"）
     const inPond = (x, y) => ponds.some((p) => Math.hypot(x - p.x, y - p.y) < p.r + 40);
+    this.inPond = inPond; // 存到 this 上，动物刷新逻辑也要用
 
     // --- 5.2 假山石：20 块太湖石（灰青色、圆润造型，园林里那种） ---
     let rockCount = 0;
@@ -197,58 +198,28 @@ export default class GameScene extends Phaser.Scene {
     this.physics.add.overlap(this.player, this.spiritStones, this.collectStone, null, this);
 
     // ============ 7. 动物：随机分布 + 随机游荡 ============
-    // 目前只有"低级动物"：普通动物 + 山海经里的低级异兽
-    // 高级妖兽（毕方、九尾狐……）以后境界高了再解锁出现
-    this.animals = this.physics.add.group();
+    // minRealm：出现所需境界（realmIndex 从 0 开始：0=练气一层，1=练气二层……）
+    // 普通动物开局就有；山海经异兽练气二层才出现（境界解锁机制）
     // kind：'prey' 温顺（被打就逃） / 'beast' 凶猛（被打会记仇反击）
-    // bite：反击时咬一口的伤害；hp/exp：血量 / 击杀经验
-    const WILDLIFE = [
-      { key: 'rabbit', name: '兔子', count: 6, speed: 55, bodyR: 6, kind: 'prey', hp: 12, exp: 15 },
-      { key: 'pheasant', name: '野鸡', count: 5, speed: 40, bodyR: 6, kind: 'prey', hp: 10, exp: 15 },
-      { key: 'deer', name: '白鹿', count: 3, speed: 70, bodyR: 8, kind: 'prey', hp: 20, exp: 25 },
-      { key: 'feifei', name: '朏朏', count: 5, speed: 65, bodyR: 6, kind: 'beast', hp: 25, exp: 30, bite: 6 },   // 山海经·中山经
-      { key: 'xingxing', name: '狌狌', count: 4, speed: 60, bodyR: 7, kind: 'beast', hp: 30, exp: 35, bite: 8 }, // 山海经·南山经
-      { key: 'dangkang', name: '当康', count: 2, speed: 35, bodyR: 7, kind: 'beast', hp: 40, exp: 50, bite: 10 }, // 山海经·东山经
+    // drops：击杀时概率掉落的材料
+    this.animals = this.physics.add.group();
+    this.wildlife = [
+      { key: 'rabbit', name: '兔子', count: 6, speed: 55, bodyR: 6, kind: 'prey', hp: 12, exp: 15, minRealm: 0, drops: [{ id: 'tu-rou', chance: 0.6 }] },
+      { key: 'pheasant', name: '野鸡', count: 5, speed: 40, bodyR: 6, kind: 'prey', hp: 10, exp: 15, minRealm: 0, drops: [{ id: 'zhi-yu', chance: 0.6 }] },
+      { key: 'deer', name: '白鹿', count: 3, speed: 70, bodyR: 8, kind: 'prey', hp: 20, exp: 25, minRealm: 0, drops: [{ id: 'lu-rong', chance: 0.5 }] },
+      { key: 'feifei', name: '朏朏', count: 5, speed: 65, bodyR: 6, kind: 'beast', hp: 25, exp: 30, bite: 6, minRealm: 1, drops: [{ id: 'feifei-weihao', chance: 0.5 }] },   // 山海经·中山经
+      { key: 'xingxing', name: '狌狌', count: 4, speed: 60, bodyR: 7, kind: 'beast', hp: 30, exp: 35, bite: 8, minRealm: 1, drops: [{ id: 'xingxing-zhua', chance: 0.5 }] }, // 山海经·南山经
+      { key: 'dangkang', name: '当康', count: 2, speed: 35, bodyR: 7, kind: 'beast', hp: 40, exp: 50, bite: 10, minRealm: 1, drops: [{ id: 'dangkang-liaoya', chance: 0.7 }] }, // 山海经·东山经
     ];
 
-    for (const spec of WILDLIFE) {
-      for (let i = 0; i < spec.count; i++) {
-        // 抽一个不在水里的出生点
-        let ax, ay;
-        do {
-          ax = Phaser.Math.Between(80, worldWidth - 80);
-          ay = Phaser.Math.Between(80, worldHeight - 80);
-        } while (inPond(ax, ay));
-
-        // 身体：隐形圆，负责碰撞和移动
-        const critter = this.add.circle(ax, ay, spec.bodyR, 0xffffff).setVisible(false);
-        this.animals.add(critter);
-        // 小知识：圆形这类"图形对象"没有快捷方法，碰撞设置要写成 对象.body.xxx
-        critter.body.setCollideWorldBounds(true); // 动物不走出地图
-
-        // 外观：小动物造型（画一次，转身时才重画）
-        const gfx = this.add.graphics();
-        drawAnimal(gfx, spec.key, 'left');
-        critter.animalGfx = gfx;
-        critter.animalKey = spec.key;
-        critter.animalSpeed = spec.speed;
-        critter.animalFace = 'left';
-        critter.animalMoveUntil = 0;
-        critter.animalThinkAt = Date.now() + Phaser.Math.Between(0, 2000); // 错开"想事情"的时间
-
-        // ---- 战斗相关状态 ----
-        critter.animalHp = spec.hp;          // 血量
-        critter.animalKind = spec.kind;      // 温顺 / 凶猛
-        critter.animalExp = spec.exp;        // 击杀给的经验
-        critter.animalBite = spec.bite || 0; // 反击伤害
-        critter.animalHostile = false;       // 是否在追玩家
-        critter.animalFleeUntil = 0;         // 受惊逃跑的截止时间
-        critter.animalKnockbackUntil = 0;    // 被击退的截止时间
-        critter.animalBiteAt = 0;            // 下一次咬人的时间
-      }
+    // 开局只生成"当前境界已解锁"的物种
+    for (const spec of this.wildlife) {
+      if (spec.minRealm > window.gameData.realmIndex) continue; // 境界不够，暂不出现
+      for (let i = 0; i < spec.count; i++) this.spawnCritter(spec);
     }
     this.physics.add.collider(this.animals, this.obstacles); // 动物不穿树穿石
     this.physics.add.collider(this.animals, this.animals);   // 动物之间也不重叠
+    this.nextTopUpAt = Date.now() + 10000; // 每 10 秒补一次动物数量
 
     // 记录玩家朝向：御剑术冲刺方向 + 像素小人朝向（初始朝下）
     this.facing = new Phaser.Math.Vector2(0, 1);
@@ -283,6 +254,47 @@ export default class GameScene extends Phaser.Scene {
     const gained = addExp(data, 10); // 经验 +10 ×悟性加成
 
     this.floatText(stone.x - 20, stone.y - 20, '+' + gained + ' 经验', '#ffe066');
+  }
+
+  // 生成一只动物：出生点随机（避开水面、离玩家远一点）
+  spawnCritter(spec) {
+    const bounds = this.physics.world.bounds;
+    let ax = 80;
+    let ay = 80;
+    for (let tries = 0; tries < 50; tries++) {
+      ax = Phaser.Math.Between(80, bounds.width - 80);
+      ay = Phaser.Math.Between(80, bounds.height - 80);
+      if (this.inPond(ax, ay)) continue;                              // 别生在水里
+      if (Math.hypot(ax - this.player.x, ay - this.player.y) < 400) continue; // 别刷在玩家脸上
+      break;
+    }
+
+    // 身体：隐形圆，负责碰撞和移动
+    const critter = this.add.circle(ax, ay, spec.bodyR, 0xffffff).setVisible(false);
+    this.animals.add(critter);
+    critter.body.setCollideWorldBounds(true); // 动物不走出地图
+
+    // 外观：小动物造型（画一次，转身时才重画）
+    const gfx = this.add.graphics();
+    drawAnimal(gfx, spec.key, 'left');
+    critter.animalGfx = gfx;
+    critter.animalKey = spec.key;
+    critter.animalSpeed = spec.speed;
+    critter.animalFace = 'left';
+    critter.animalMoveUntil = 0;
+    critter.animalThinkAt = Date.now() + Phaser.Math.Between(0, 2000); // 错开"想事情"的时间
+
+    // ---- 战斗相关状态 ----
+    critter.animalHp = spec.hp;          // 血量
+    critter.animalKind = spec.kind;      // 温顺 / 凶猛
+    critter.animalExp = spec.exp;        // 击杀给的经验
+    critter.animalBite = spec.bite || 0; // 反击伤害
+    critter.animalDrops = spec.drops || [];
+    critter.animalHostile = false;       // 是否在追玩家
+    critter.animalFleeUntil = 0;         // 受惊逃跑的截止时间
+    critter.animalKnockbackUntil = 0;    // 被击退的截止时间
+    critter.animalBiteAt = 0;            // 下一次咬人的时间
+    return critter;
   }
 
   // ============ 战斗 ============
@@ -335,11 +347,20 @@ export default class GameScene extends Phaser.Scene {
     animal.animalKnockbackUntil = Date.now() + 150;
 
     if (animal.animalHp <= 0) {
-      // 击杀奖励：经验 + 灵石
+      // 击杀奖励：经验 + 灵石 + 概率掉材料
       const gained = addExp(data, animal.animalExp);
       const ling = Phaser.Math.Between(2, 4);
       addLingShi(data, ling);
       this.floatText(animal.x, animal.y - 30, '+' + gained + ' 经验  +' + ling + ' 灵石', '#ffe066');
+      let dropLine = '';
+      for (const drop of animal.animalDrops) {
+        if (Math.random() < drop.chance) {
+          addItem(data, drop.id); // 材料进背包
+          const mat = MATERIALS.find((m) => m.id === drop.id);
+          dropLine += (dropLine ? '  ' : '') + (mat ? mat.name : '材料') + '×1';
+        }
+      }
+      if (dropLine) this.floatText(animal.x, animal.y - 48, dropLine, '#ffd54f');
       animal.destroy();
       animal.animalGfx.destroy();
       return;
@@ -366,7 +387,9 @@ export default class GameScene extends Phaser.Scene {
     this.floatText(this.player.x, this.player.y - 26, '-' + taken, '#ff5252');
 
     if (data.hp <= 0) {
-      // 重伤：回出生点满状态，动物们消气
+      // 重伤：损失当前境界进度的一半经验，回出生点满状态，动物们消气
+      const lost = Math.floor(data.exp / 2);
+      data.exp -= lost;
       data.hp = data.maxHp;
       data.qi = data.maxQi;
       this.player.setPosition(this.spawn.x, this.spawn.y);
@@ -375,7 +398,7 @@ export default class GameScene extends Phaser.Scene {
         a.animalFleeUntil = 0;
         a.body.setVelocity(0);
       }
-      this.floatText(this.player.x, this.player.y - 30, '重伤！被送回出生点', '#ff5252');
+      this.floatText(this.player.x, this.player.y - 30, '重伤！损失 ' + lost + ' 经验，被送回出生点', '#ff5252');
     }
   }
 
@@ -530,6 +553,17 @@ export default class GameScene extends Phaser.Scene {
       // 外观跟着身体走（取整，像素清晰），并参与前后遮挡
       animal.animalGfx.setPosition(Math.round(animal.x), Math.round(animal.y));
       animal.animalGfx.setDepth(animal.y);
+    }
+
+    // ============ 动物数量补充 ============
+    // 每 10 秒检查一次：被杀的动物补回来，境界解锁的新物种出现
+    if (now > this.nextTopUpAt) {
+      this.nextTopUpAt = now + 10000;
+      for (const spec of this.wildlife) {
+        if (spec.minRealm > data.realmIndex) continue; // 境界不够
+        const alive = this.animals.getChildren().filter((a) => a.animalKey === spec.key).length;
+        if (alive < spec.count) this.spawnCritter(spec); // 每种每轮最多补 1 只，慢慢恢复
+      }
     }
   }
 }

@@ -128,6 +128,16 @@ export function rollTalents() {
   };
 }
 
+// ============ 材料（怪物掉落，以后炼丹/炼器/制符用） ============
+export const MATERIALS = [
+  { id: 'tu-rou', name: '兔肉', desc: '野兔肉，炼丹入药的材料' },
+  { id: 'zhi-yu', name: '雉羽', desc: '野鸡尾羽，可制符笔' },
+  { id: 'lu-rong', name: '鹿茸', desc: '白鹿之茸，滋补入药' },
+  { id: 'feifei-weihao', name: '朏朏尾毫', desc: '灵猫尾毫，柔可制笔' },
+  { id: 'xingxing-zhua', name: '狌狌爪', desc: '白耳猿利爪，炼器材料' },
+  { id: 'dangkang-liaoya', name: '当康獠牙', desc: '瑞兽之牙，炼器材料' },
+];
+
 // ============ 创建一名新玩家 ============
 export function createPlayerData() {
   const talents = rollTalents();
@@ -206,6 +216,8 @@ export function createPlayerData() {
         grade: '凡品', count: 0,
         desc: '修仙界通用货币，蕴含一丝灵气',
       },
+      // 怪物掉落的材料（数量 0 = 还没打到过，打到了数量才 +1）
+      ...MATERIALS.map((m) => ({ ...m, type: 'material', grade: '凡品', count: 0 })),
     ],
   };
 }
@@ -341,4 +353,16 @@ export function shieldArmorBonus(data) {
 export function addLingShi(data, amount) {
   const lingShi = data.inventory.find((i) => i.id === 'ling-shi');
   if (lingShi) lingShi.count += amount;
+}
+
+// ============ 往背包加物品 ============
+// 背包里已经有这个物品 → 数量 +1；没有 → 按材料表新建一条
+export function addItem(data, id, amount = 1) {
+  const item = data.inventory.find((i) => i.id === id);
+  if (item) {
+    item.count += amount;
+  } else {
+    const m = MATERIALS.find((x) => x.id === id);
+    if (m) data.inventory.push({ ...m, type: 'material', grade: '凡品', count: amount });
+  }
 }
