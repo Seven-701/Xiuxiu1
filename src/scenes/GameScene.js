@@ -1,5 +1,8 @@
 import * as Phaser from 'phaser';
-import { addExp, addLingShi, regenQi, addItem, MATERIALS } from '../playerData.js';
+import {
+  addExp, addLingShi, regenQi, addItem, MATERIALS,
+  REPAIRS, submitRepair, allRepaired, pointDeity, performDianHua, repairNeedText,
+} from '../playerData.js';
 import { drawPlayer, drawAnimal } from '../sprites.js';
 
 // 游戏主场景：负责"世界"——地图、玩家、灵石、障碍、技能效果
@@ -28,11 +31,172 @@ export default class GameScene extends Phaser.Scene {
       }
     }
 
-    // ============ 3. 玩家：随机出生点 ============
-    // 每次刷新页面，出生位置都不一样——这就是"每个玩家开局不同"
-    const spawnX = Phaser.Math.Between(300, worldWidth - 300);
-    const spawnY = Phaser.Math.Between(300, worldHeight - 300);
-    this.spawn = { x: spawnX, y: spawnY }; // 记住出生点：重伤后回这里
+    // ============ 3. 废弃道观：出生点 + 序章舞台 ============
+    // 玩家出生在这座破败道观里。四处需要修缮，全部修好后在香炉前上香点化
+    // 每个修缮点：x/y 是"按 F 交互的位置"，drawDepth 是画面里的前后顺序
+    this.temple = {
+      spots: {
+        shanmen:   { x: 1600, y: 1795, drawDepth: 1795, gfx: this.add.graphics(), fixed: false }, // 山门（门洞处）
+        xianglu:   { x: 1600, y: 1490, drawDepth: 1490, gfx: this.add.graphics(), fixed: false }, // 香炉（院子里）
+        sandian:   { x: 1600, y: 1435, drawDepth: 1330, gfx: this.add.graphics(), fixed: false }, // 三清殿（主殿门前）
+        xiangfang: { x: 1480, y: 1590, drawDepth: 1530, gfx: this.add.graphics(), fixed: false }, // 厢房（小屋旁）
+      },
+    };
+
+    // —— 道观主体：院子石板地、围墙、中央太极图（一次画好，不随修缮变化）——
+    const templeBase = this.add.graphics();
+    templeBase.fillStyle(0x9a9284);
+    templeBase.fillRect(1400, 1400, 400, 400);       // 院子石板地
+    templeBase.fillStyle(0x8b8378);
+    templeBase.fillRect(1400, 1400, 400, 14);        // 北墙（上）
+    templeBase.fillRect(1400, 1400, 14, 400);        // 西墙（左）
+    templeBase.fillRect(1786, 1400, 14, 100);        // 东墙（右，上段）
+    templeBase.fillRect(1786, 1540, 14, 260);        // 东墙（右，下段——中间缺口是破败的痕迹）
+    templeBase.fillRect(1400, 1786, 140, 14);        // 南墙（下，西段）
+    templeBase.fillRect(1660, 1786, 140, 14);        // 南墙（下，东段——中间是山门门洞）
+    templeBase.fillStyle(0x7d7466);
+    for (let lx = 1450; lx < 1800; lx += 50) templeBase.fillRect(lx, 1400, 2, 400); // 石板缝（竖）
+    for (let ly = 1450; ly < 1800; ly += 50) templeBase.fillRect(1400, ly, 400, 2); // 石板缝（横）
+    // 中央太极图（阴阳鱼）：道教的标志
+    templeBase.fillStyle(0x2e2a24);
+    templeBase.fillCircle(1600, 1640, 36);
+    templeBase.fillStyle(0xd8d2c4);
+    templeBase.slice(1600, 1640, 36, Math.PI / 2, Math.PI * 1.5, false); // 左半：阳（亮）
+    templeBase.fillPath();
+    templeBase.fillCircle(1600, 1622, 18);
+    templeBase.fillStyle(0x2e2a24);
+    templeBase.fillCircle(1600, 1658, 18);
+    templeBase.fillCircle(1600, 1622, 5);
+    templeBase.fillStyle(0xd8d2c4);
+    templeBase.fillCircle(1600, 1658, 5);
+    templeBase.setDepth(1400); // 院子在最底层（北边的树在它后面，南边的在它前面）
+
+    // —— 障碍物集合 + 围墙与殿身的碰撞（挡住玩家和动物）——
+    this.obstacles = this.physics.add.staticGroup(); // staticGroup = 不会自己动的物体
+    const block = (x, y, w, h) => {
+      const r = this.add.rectangle(x, y, w, h, 0xffffff).setVisible(false);
+      this.obstacles.add(r);
+      return r;
+    };
+    block(1600, 1407, 400, 14);  // 北墙
+    block(1407, 1600, 14, 400);  // 西墙
+    block(1793, 1450, 14, 100);  // 东墙上段
+    block(1793, 1670, 14, 260);  // 东墙下段
+    block(1470, 1793, 140, 14);  // 南墙西段
+    block(1730, 1793, 140, 14);  // 南墙东段（中间是门洞，人能走）
+    block(1600, 1365, 240, 70);  // 三清殿殿身
+    block(1485, 1550, 90, 60);   // 厢房
+    const censerBody = this.add.circle(1600, 1486, 16, 0x6b6458).setVisible(false);
+    this.obstacles.add(censerBody);
+    censerBody.body.setCircle(16); // 香炉也挡路
+
+    // 判断某个点是否在道观范围里（树/石头/动物生成时都要避开）
+    const inTemple = (x, y) => x > 1360 && x < 1840 && y > 1200 && y < 1850;
+    this.inTemple = inTemple;
+
+    // —— 四处修缮点的画法：broken=true 画破败版，false 画完好版 ——
+    this.spotDrawers = {
+      // 山门：两柱一梁。破败时左柱断了半截、门楣横躺在地；修好后梁柱齐全 + 金匾
+      shanmen: (g, broken) => {
+        g.fillStyle(0x8b8378);
+        if (broken) {
+          g.fillRect(1545, 1760, 12, 40);        // 左柱（断了一截）
+          g.fillRect(1643, 1748, 12, 52);        // 右柱
+          g.fillStyle(0x9a9284);
+          g.fillRect(1570, 1798, 70, 10);        // 门楣倒在地上
+          g.fillStyle(0x6b6458);
+          g.fillRect(1570, 1798, 70, 3);         // 门楣裂纹
+        } else {
+          g.fillRect(1545, 1748, 12, 52);        // 左柱修好
+          g.fillRect(1643, 1748, 12, 52);        // 右柱
+          g.fillRect(1545, 1740, 110, 12);       // 横梁
+          g.fillStyle(0xc9a227);
+          g.fillRect(1566, 1748, 68, 14);        // 匾额（金）
+        }
+      },
+      // 香炉：三足石炉。破败时缺一足、炉身开裂；修好后香火重燃
+      xianglu: (g, broken) => {
+        g.fillStyle(0x6b6458);
+        g.fillRect(1586, 1476, 28, 18);          // 炉身
+        g.fillRect(1588, 1494, 6, 12);           // 左足
+        g.fillRect(1606, 1494, 6, 12);           // 右足
+        if (broken) {
+          g.fillStyle(0x4a4438);
+          g.fillRect(1598, 1476, 3, 18);         // 炉身裂纹
+        } else {
+          g.fillRect(1597, 1494, 6, 12);         // 中足（补上）
+          g.fillStyle(0xffa726);                 // 香火：三炷香
+          g.fillRect(1594, 1466, 2, 9);
+          g.fillRect(1599, 1464, 2, 11);
+          g.fillRect(1604, 1466, 2, 9);
+          g.fillCircle(1600, 1460, 4);           // 火苗
+          g.fillStyle(0xffe082);
+          g.fillCircle(1600, 1461, 2);
+        }
+      },
+      // 三清殿：主殿。破败时屋顶破了个大洞；修好后瓦顶完整、红柱金珠
+      sandian: (g, broken) => {
+        g.fillStyle(0x7d7466);
+        g.fillRect(1480, 1330, 240, 70);         // 殿身
+        g.fillStyle(0x4a4438);
+        g.fillRect(1578, 1362, 44, 38);          // 殿门（黑洞洞的门口）
+        g.fillStyle(0x5c4a3a);
+        g.fillTriangle(1440, 1330, 1600, 1240, 1760, 1330); // 屋顶
+        if (broken) {
+          g.fillStyle(0x527a63);                 // 屋顶破洞（透出天光）
+          g.fillTriangle(1500, 1292, 1540, 1258, 1560, 1302);
+          g.fillStyle(0x3e3226);
+          g.fillRect(1520, 1264, 60, 5);         // 断掉的屋脊
+        } else {
+          g.fillStyle(0x8c3b2e);                 // 两根红柱
+          g.fillRect(1520, 1330, 10, 70);
+          g.fillRect(1670, 1330, 10, 70);
+          g.fillStyle(0x3e3226);
+          g.fillRect(1560, 1240, 80, 8);         // 屋脊
+          g.fillStyle(0xc9a227);
+          g.fillCircle(1600, 1298, 3);           // 屋脊宝珠
+        }
+      },
+      // 厢房：小屋。破败时塌了半边 + 瓦砾堆；修好后完整带门窗
+      xiangfang: (g, broken) => {
+        g.fillStyle(0x7d7466);
+        g.fillRect(1440, 1520, broken ? 56 : 90, 60); // 破败时右半边塌了
+        g.fillStyle(0x5c4a3a);
+        g.fillTriangle(1420, 1520, 1485, 1484, 1550, 1520); // 屋顶
+        if (broken) {
+          g.fillStyle(0x527a63);                 // 屋顶破洞
+          g.fillTriangle(1500, 1498, 1520, 1488, 1530, 1512);
+          g.fillStyle(0x9a9284);                 // 瓦砾堆
+          g.fillCircle(1498, 1566, 8);
+          g.fillCircle(1508, 1572, 6);
+        } else {
+          g.fillStyle(0x4a4438);
+          g.fillRect(1464, 1550, 26, 30);        // 门
+          g.fillStyle(0x8a9799);
+          g.fillRect(1500, 1530, 18, 12);        // 窗
+          g.fillStyle(0x3e3226);
+          g.fillRect(1450, 1484, 70, 6);         // 屋脊
+        }
+      },
+    };
+    // 先按"破败"状态画一遍
+    for (const key of Object.keys(this.temple.spots)) this.redrawSpot(key);
+
+    // —— 破败的杂草：院子里几簇野草 ——
+    const weeds = this.add.graphics();
+    weeds.fillStyle(0x4a7059);
+    weeds.fillRect(1420, 1660, 10, 3);
+    weeds.fillRect(1426, 1656, 3, 10);
+    weeds.fillRect(1768, 1620, 10, 3);
+    weeds.fillRect(1772, 1618, 3, 8);
+    weeds.fillRect(1440, 1450, 8, 3);
+    weeds.fillRect(1740, 1720, 8, 3);
+    weeds.setDepth(1650);
+
+    // ============ 4. 玩家：出生在道观院子里 ============
+    this.spawn = { x: 1600, y: 1720 }; // 记住出生点：重伤后回这里
+    const spawnX = this.spawn.x;
+    const spawnY = this.spawn.y;
 
     // 玩家本体：一个不可见的矩形，只负责物理碰撞
     // 画面由下面的"像素小人"负责——这叫"显示与逻辑分离"
@@ -56,21 +220,22 @@ export default class GameScene extends Phaser.Scene {
     this.cameras.main.setBounds(0, 0, worldWidth, worldHeight);
     this.cameras.main.startFollow(this.player);
 
-    // ============ 4. 键盘与攻击 ============
+    // ============ 5. 键盘与攻击 ============
     this.cursors = this.input.keyboard.createCursorKeys(); // 方向键
     this.wasd = this.input.keyboard.addKeys('W,A,S,D');    // WASD
+    this.keyF = this.input.keyboard.addKey('F');           // F：采集/修缮/上香
     this.lastAttackAt = 0; // 上次挥剑的时间戳（控制攻速：0.4 秒一剑）
 
-    // ============ 5. 地形与障碍物 ============
-    // 障碍物集合：池塘、石头、树木都会挡住去路
-    this.obstacles = this.physics.add.staticGroup(); // staticGroup = 不会自己动的物体
+    // ============ 6. 地形与障碍物 ============
+    // 障碍物集合（this.obstacles）已在道观一节创建，这里继续往里加
 
-    // --- 5.1 荷塘：3 片青碧湖水（堤岸 + 水面 + 荷叶荷花）---
+    // --- 6.1 荷塘：3 片青碧湖水（堤岸 + 水面 + 荷叶荷花）---
     // 先画池塘并记下位置，后面的树木/石头/花丛都要避开水面
     const ponds = [];
     for (let i = 0; i < 3; i++) {
       const px = Phaser.Math.Between(500, worldWidth - 500);
       const py = Phaser.Math.Between(500, worldHeight - 500);
+      if (inTemple(px, py)) { i--; continue; } // 湖别淹了道观
       const pr = Phaser.Math.Between(100, 150); // 湖的半径
       ponds.push({ x: px, y: py, r: pr });
       this.add.circle(px, py, pr + 12, 0xd6bf8d).setDepth(py);                  // 堤岸（土黄）
@@ -103,70 +268,85 @@ export default class GameScene extends Phaser.Scene {
     const inPond = (x, y) => ponds.some((p) => Math.hypot(x - p.x, y - p.y) < p.r + 40);
     this.inPond = inPond; // 存到 this 上，动物刷新逻辑也要用
 
-    // --- 5.2 假山石：20 块太湖石（灰青色、圆润造型，园林里那种） ---
+    // --- 6.2 假山石：20 块太湖石（灰青色、圆润造型，园林里那种） ---
+    // 注意：石头也是"采石"的目标（F 键采集，得石材）
+    this.stones = [];
     let rockCount = 0;
     let rockTries = 0;
     while (rockCount < 20 && rockTries < 200) {
       rockTries++;
       const rx = Phaser.Math.Between(100, worldWidth - 100);
       const ry = Phaser.Math.Between(100, worldHeight - 100);
-      if (inPond(rx, ry)) continue; // 石头漂在水上太怪了，换位置
+      if (inPond(rx, ry) || inTemple(rx, ry)) continue; // 不漂水上、不堵道观
       const rr = Phaser.Math.Between(16, 26); // 石头大小随机
-      this.add.circle(rx, ry, rr, 0x8a9799).setDepth(ry);              // 石身（灰青）
-      this.add.circle(rx + 3, ry + 4, rr * 0.6, 0x7c8a8d).setDepth(ry); // 暗面，有立体感
+      const c1 = this.add.circle(rx, ry, rr, 0x8a9799).setDepth(ry);              // 石身（灰青）
+      const c2 = this.add.circle(rx + 3, ry + 4, rr * 0.6, 0x7c8a8d).setDepth(ry); // 暗面，有立体感
       const rockBody = this.add.circle(rx, ry, rr + 2, 0x8a9799).setVisible(false);
       this.obstacles.add(rockBody);
       rockBody.body.setCircle(rr + 2); // 圆形碰撞
+      rockBody.rockObjs = [c1, c2];    // 被采掉时这些外观一起消失
+      this.stones.push(rockBody);      // 记进采集目标列表
       rockCount++;
     }
 
-    // --- 5.3 树木：40 棵，三种中国传统植物（竹林/松树/桃树） ---
+    // --- 6.3 树木：40 棵，三种中国传统植物（竹林/松树/桃树） ---
+    // 树木也是"砍树"的目标（F 键采集，得木材）
+    this.trees = [];
     let treeCount = 0;
     let treeTries = 0;
     while (treeCount < 40 && treeTries < 300) {
       treeTries++;
       const tx = Phaser.Math.Between(60, worldWidth - 60);
       const ty = Phaser.Math.Between(60, worldHeight - 60);
-      if (inPond(tx, ty)) continue;
+      if (inPond(tx, ty) || inTemple(tx, ty)) continue;
       const kind = Phaser.Math.Between(0, 9); // 随机植物：0~3 竹，4~6 松，7~9 桃
+      const parts = []; // 这棵树的全部"零件"（被砍时一起消失）
 
       if (kind <= 3) {
         // 竹林：几根一节一节的竹竿
         const drawStalk = (x, h) => {
-          this.add.rectangle(x, ty - h / 2, 4, h, 0x3e7a52).setDepth(ty); // 竹竿
+          parts.push(this.add.rectangle(x, ty - h / 2, 4, h, 0x3e7a52).setDepth(ty)); // 竹竿
           for (let s = ty - h / 2 + 12; s < ty + h / 2; s += 12) {
-            this.add.rectangle(x, s, 5, 2, 0x2e5d3e).setDepth(ty); // 竹节
+            parts.push(this.add.rectangle(x, s, 5, 2, 0x2e5d3e).setDepth(ty)); // 竹节
           }
         };
         drawStalk(tx - 7, Phaser.Math.Between(40, 60));
         drawStalk(tx + 3, Phaser.Math.Between(48, 72));
         drawStalk(tx + 10, Phaser.Math.Between(36, 56));
         drawStalk(tx - 2, Phaser.Math.Between(52, 76));
-        this.add.rectangle(tx - 4, ty - 38, 8, 2, 0x4c8f62).setDepth(ty); // 竹叶
-        this.add.rectangle(tx + 8, ty - 42, 7, 2, 0x4c8f62).setDepth(ty);
+        parts.push(this.add.rectangle(tx - 4, ty - 38, 8, 2, 0x4c8f62).setDepth(ty)); // 竹叶
+        parts.push(this.add.rectangle(tx + 8, ty - 42, 7, 2, 0x4c8f62).setDepth(ty));
         const bambooBody = this.add.rectangle(tx, ty, 12, 12, 0x3e7a52).setVisible(false);
         this.obstacles.add(bambooBody); // 竹子只有根部挡路
+        bambooBody.treeObjs = parts;
+        this.trees.push(bambooBody);
       } else if (kind <= 6) {
         // 松树：水墨画里一层层叠上去的树冠
-        this.add.rectangle(tx, ty + 12, 8, 24, 0x5a4632).setDepth(ty + 20); // 树干
-        this.add.circle(tx, ty - 8, 16, 0x2e5a45).setDepth(ty);             // 树冠：下大上小三层
-        this.add.circle(tx, ty - 20, 13, 0x35664d).setDepth(ty);
-        this.add.circle(tx, ty - 30, 9, 0x3d7356).setDepth(ty);
+        parts.push(this.add.rectangle(tx, ty + 12, 8, 24, 0x5a4632).setDepth(ty + 20)); // 树干
+        parts.push(this.add.circle(tx, ty - 8, 16, 0x2e5a45).setDepth(ty));             // 树冠：下大上小三层
+        parts.push(this.add.circle(tx, ty - 20, 13, 0x35664d).setDepth(ty));
+        parts.push(this.add.circle(tx, ty - 30, 9, 0x3d7356).setDepth(ty));
         const pineBody = this.add.rectangle(tx, ty + 10, 12, 16, 0x5a4632).setVisible(false);
         this.obstacles.add(pineBody);
+        pineBody.treeObjs = parts;
+        this.trees.push(pineBody);
       } else {
         // 桃树：粉色花冠
-        this.add.rectangle(tx, ty + 12, 8, 24, 0x5a4632).setDepth(ty + 20);
-        this.add.circle(tx - 5, ty - 4, 14, 0xe8a8b8).setDepth(ty); // 花冠
-        this.add.circle(tx + 6, ty - 2, 13, 0xe8a8b8).setDepth(ty);
-        this.add.circle(tx, ty - 10, 12, 0xf2c3cf).setDepth(ty);    // 花冠亮部
+        parts.push(this.add.rectangle(tx, ty + 12, 8, 24, 0x5a4632).setDepth(ty + 20));
+        parts.push(this.add.circle(tx - 5, ty - 4, 14, 0xe8a8b8).setDepth(ty)); // 花冠
+        parts.push(this.add.circle(tx + 6, ty - 2, 13, 0xe8a8b8).setDepth(ty));
+        parts.push(this.add.circle(tx, ty - 10, 12, 0xf2c3cf).setDepth(ty));    // 花冠亮部
         const peachBody = this.add.rectangle(tx, ty + 10, 12, 16, 0x5a4632).setVisible(false);
         this.obstacles.add(peachBody);
+        peachBody.treeObjs = parts;
+        this.trees.push(peachBody);
       }
       treeCount++;
     }
 
-    // --- 5.4 花丛：60 丛（桃花粉/梨花白/梅花红/迎春黄），纯装饰不挡路 ---
+    // --- 6.4 花丛：60 丛（桃花粉/梨花白/梅花红/迎春黄） ---
+    // 花丛不挡路，但可以"割草"（F 键采集，得茅草）
+    this.flowers = [];
     const flowerColors = [0xf0aebd, 0xf2ead8, 0xd96a7a, 0xe8c86a];
     let flowerCount = 0;
     let flowerTries = 0;
@@ -174,30 +354,31 @@ export default class GameScene extends Phaser.Scene {
       flowerTries++;
       const fx = Phaser.Math.Between(30, worldWidth - 30);
       const fy = Phaser.Math.Between(30, worldHeight - 30);
-      if (inPond(fx, fy)) continue; // 花也别开在水里
+      if (inPond(fx, fy) || inTemple(fx, fy)) continue; // 花也别开在水里、别开进道观
       const fc = flowerColors[Phaser.Math.Between(0, flowerColors.length - 1)];
-      this.add.circle(fx, fy, 2, fc);      // 一丛 = 3 朵小花
-      this.add.circle(fx + 4, fy + 2, 2, fc);
-      this.add.circle(fx - 3, fy + 3, 2, fc);
+      const f1 = this.add.circle(fx, fy, 2, fc);      // 一丛 = 3 朵小花
+      const f2 = this.add.circle(fx + 4, fy + 2, 2, fc);
+      const f3 = this.add.circle(fx - 3, fy + 3, 2, fc);
+      this.flowers.push({ x: fx, y: fy, objs: [f1, f2, f3] });
       flowerCount++;
     }
 
     this.physics.add.collider(this.player, this.obstacles);
 
-    // ============ 6. 灵石：30 颗随机分布 ============
+    // ============ 7. 灵石：30 颗随机分布 ============
     // 捡到一颗：灵石 +1、经验 +10×悟性加成（经验满自动突破境界）
     this.spiritStones = this.physics.add.group();
     for (let i = 0; i < 30; i++) {
       const sx = Phaser.Math.Between(100, worldWidth - 100);
       const sy = Phaser.Math.Between(100, worldHeight - 100);
-      if (inPond(sx, sy)) { i--; continue; } // 灵石别落在湖里，不然玩家捡不到
+      if (inPond(sx, sy) || inTemple(sx, sy)) { i--; continue; } // 灵石别落在湖里和道观里
       const stone = this.add.circle(sx, sy, 8, 0xffd700);
       stone.setDepth(sy); // 和树木/石头一样按 y 排前后
       this.spiritStones.add(stone);
     }
     this.physics.add.overlap(this.player, this.spiritStones, this.collectStone, null, this);
 
-    // ============ 7. 动物：随机分布 + 随机游荡 ============
+    // ============ 8. 动物：随机分布 + 随机游荡 ============
     // minRealm：出现所需境界（realmIndex 从 0 开始：0=练气一层，1=练气二层……）
     // 普通动物开局就有；山海经异兽练气二层才出现（境界解锁机制）
     // kind：'prey' 温顺（被打就逃） / 'beast' 凶猛（被打会记仇反击）
@@ -265,6 +446,7 @@ export default class GameScene extends Phaser.Scene {
       ax = Phaser.Math.Between(80, bounds.width - 80);
       ay = Phaser.Math.Between(80, bounds.height - 80);
       if (this.inPond(ax, ay)) continue;                              // 别生在水里
+      if (this.inTemple(ax, ay)) continue;                            // 别生进道观
       if (Math.hypot(ax - this.player.x, ay - this.player.y) < 400) continue; // 别刷在玩家脸上
       break;
     }
@@ -295,6 +477,160 @@ export default class GameScene extends Phaser.Scene {
     critter.animalKnockbackUntil = 0;    // 被击退的截止时间
     critter.animalBiteAt = 0;            // 下一次咬人的时间
     return critter;
+  }
+
+  // ============ 序章：修缮与点化 ============
+  // 重画一处修缮点（broken=破败版 / 完好版）
+  redrawSpot(key) {
+    const spot = this.temple.spots[key];
+    spot.gfx.clear();
+    this.spotDrawers[key](spot.gfx, !spot.fixed);
+    spot.gfx.setDepth(spot.drawDepth);
+  }
+
+  // 修缮完成：标记为已修好并重画
+  setSpotFixed(key) {
+    this.temple.spots[key].fixed = true;
+    this.redrawSpot(key);
+  }
+
+  // 找玩家 70 像素内最近的修缮点
+  nearestSpot(p) {
+    let best = null;
+    let bestDist = 70;
+    for (const key of Object.keys(this.temple.spots)) {
+      const s = this.temple.spots[key];
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
+      if (d < bestDist) { bestDist = d; best = { key, x: s.x, y: s.y }; }
+    }
+    return best;
+  }
+
+  // 找玩家 60 像素内最近的采集物（树/石头/花丛）
+  nearestCollectable(p) {
+    let best = null;
+    let bestDist = 60;
+    for (const t of this.trees) {
+      const d = Math.hypot(p.x - t.x, p.y - t.y);
+      if (d < bestDist) { bestDist = d; best = { type: 'tree', obj: t }; }
+    }
+    for (const s of this.stones) {
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
+      if (d < bestDist) { bestDist = d; best = { type: 'stone', obj: s }; }
+    }
+    for (const f of this.flowers) {
+      const d = Math.hypot(p.x - f.x, p.y - f.y);
+      if (d < bestDist) { bestDist = d; best = { type: 'flower', obj: f }; }
+    }
+    return best;
+  }
+
+  // 每帧更新"按 F"提示（写到 gameData.interactHint，由界面显示）
+  updateInteract() {
+    const data = window.gameData;
+    let hint = '';
+    if (!data.story) { // 剧情中不提示
+      const p = this.player;
+      const spot = this.nearestSpot(p);
+      if (spot) {
+        const info = REPAIRS.find((r) => r.key === spot.key);
+        if (allRepaired(data) && spot.key === 'xianglu') {
+          hint = '按 F 上香 · 请神点化';
+        } else if (data.repair[spot.key]) {
+          hint = info.name + '（已修好）';
+        } else {
+          hint = '按 F 修缮·' + info.name + '（需 ' + repairNeedText(info) + '）';
+        }
+      } else {
+        const c = this.nearestCollectable(p);
+        if (c) {
+          hint = c.type === 'tree' ? '按 F 砍树 · 得木材'
+            : c.type === 'stone' ? '按 F 采石 · 得石材'
+            : '按 F 割草 · 得茅草';
+        }
+      }
+    }
+    data.interactHint = hint;
+  }
+
+  // F 键按下：修缮 > 上香 > 采集（按优先级来）
+  tryInteract() {
+    const data = window.gameData;
+    if (data.story) return;
+    const p = this.player;
+
+    // 1) 在修缮点旁边：全修好且是香炉 → 上香点化；否则修缮
+    const spot = this.nearestSpot(p);
+    if (spot) {
+      if (allRepaired(data) && spot.key === 'xianglu') {
+        this.startDianHua();
+        return;
+      }
+      if (data.repair[spot.key]) {
+        this.floatText(p.x, p.y - 30, '这里已经修好了', '#cccccc');
+        return;
+      }
+      const result = submitRepair(data, spot.key);
+      if (result.ok) this.setSpotFixed(spot.key); // 画面从破败变完好
+      this.floatText(p.x, p.y - 30, result.msg, result.ok ? '#ffe066' : '#ff5252');
+      return;
+    }
+
+    // 2) 在采集物旁边：树→木材，石头→石材，花丛→茅草
+    const c = this.nearestCollectable(p);
+    if (c) this.collect(c);
+  }
+
+  // 采集：材料进背包，目标从世界上消失
+  collect(c) {
+    const data = window.gameData;
+    const id = c.type === 'tree' ? 'mu-cai' : c.type === 'stone' ? 'shi-cai' : 'mao-cao';
+    const mat = MATERIALS.find((m) => m.id === id);
+    addItem(data, id);
+    this.floatText(c.obj.x, c.obj.y - 20, '+' + mat.name + '×1', '#a5d6a7');
+    if (c.type === 'flower') {
+      for (const o of c.obj.objs) o.destroy();
+      this.flowers = this.flowers.filter((f) => f !== c.obj);
+    } else {
+      for (const o of (c.obj.treeObjs || c.obj.rockObjs || [])) o.destroy();
+      c.obj.destroy();
+      if (c.type === 'tree') this.trees = this.trees.filter((t) => t !== c.obj);
+      else this.stones = this.stones.filter((s) => s !== c.obj);
+    }
+  }
+
+  // 上香点化：天光降临，神仙显灵，揭晓天赋，赐下馈赠
+  startDianHua() {
+    const data = window.gameData;
+    const deity = pointDeity(data.talents.linggen);
+    const t = data.talents;
+
+    // 天光：一道金色光柱从香炉升起，闪烁几下
+    const light = this.add.graphics();
+    light.fillStyle(0xffe082, 0.22);
+    light.fillTriangle(1540, 1500, 1660, 1500, 1600, 1180);
+    light.fillTriangle(1560, 1500, 1640, 1500, 1600, 1100);
+    light.fillStyle(0xfff8e1, 0.9);
+    light.fillCircle(1600, 1460, 10);
+    light.setDepth(2000);
+    this.tweens.add({
+      targets: light, alpha: 0.3, yoyo: true, repeat: 3, duration: 400,
+      onComplete: () => light.destroy(),
+    });
+
+    // 剧情面板：把天赋写进神仙的话里（ui.js 负责显示）
+    data.story = {
+      title: deity.name + ' 显圣',
+      text:
+        '香炉之上，天光垂落，满院生辉。\n\n' +
+        deity.name + '显化真形，曰：\n' +
+        '"你灵根属' + t.linggen + '，品级' + t.quality + '。' +
+        '悟性 ' + t.wuxing + '，根骨 ' + t.gengu + '，福缘 ' + t.fuyuan + '。\n' +
+        '既修此观，便结此缘。今传你《吐纳心法》，此为修仙第一课。\n' +
+        '东岳之巅，若有机缘，或可再见。"\n\n' +
+        '（获得《吐纳心法》×1、灵石×10）',
+    };
+    performDianHua(data); // 揭晓天赋 + 发放馈赠
   }
 
   // ============ 战斗 ============
@@ -378,6 +714,7 @@ export default class GameScene extends Phaser.Scene {
   hurtPlayer(animal, bite) {
     const data = window.gameData;
     const now = Date.now();
+    if (data.story) return; // 剧情中不受伤
     if (now < animal.animalBiteAt) return; // 每 0.8 秒咬一口
     animal.animalBiteAt = now + 800;
 
@@ -422,8 +759,14 @@ export default class GameScene extends Phaser.Scene {
     const now = Date.now();
 
     // 按住左键攻击（点一下 = 挥一剑；按住 = 按攻速连续挥）
-    if (this.input.activePointer.isDown && this.input.activePointer.leftButtonDown()) {
+    if (!data.story && this.input.activePointer.isDown && this.input.activePointer.leftButtonDown()) {
       this.tryAttack();
+    }
+
+    // F 键：采集 / 修缮 / 上香；每帧更新交互提示
+    this.updateInteract();
+    if (!data.story && Phaser.Input.Keyboard.JustDown(this.keyF)) {
+      this.tryInteract();
     }
 
     // 内力缓慢回复（每秒 1 点）
@@ -464,8 +807,10 @@ export default class GameScene extends Phaser.Scene {
     const lookKey = this.facing4 + '|' + this.lookKeyTail();
     if (lookKey !== this.lastLookKey) this.redrawPlayer();
 
-    // 冲刺期间速度被御剑术接管，否则正常移动
-    if (now < data.buffs.dashUntil && this.facing) {
+    // 剧情中站定不动；冲刺期间速度被御剑术接管；否则正常移动
+    if (data.story) {
+      body.setVelocity(0);
+    } else if (now < data.buffs.dashUntil && this.facing) {
       body.setVelocity(this.facing.x * 800, this.facing.y * 800);
     } else {
       body.setVelocity(dir.x * speed, dir.y * speed);

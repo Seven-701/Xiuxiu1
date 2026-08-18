@@ -136,7 +136,79 @@ export const MATERIALS = [
   { id: 'feifei-weihao', name: '朏朏尾毫', desc: '灵猫尾毫，柔可制笔' },
   { id: 'xingxing-zhua', name: '狌狌爪', desc: '白耳猿利爪，炼器材料' },
   { id: 'dangkang-liaoya', name: '当康獠牙', desc: '瑞兽之牙，炼器材料' },
+  { id: 'mu-cai', name: '木材', desc: '修缮道观的木料，砍树获得' },
+  { id: 'shi-cai', name: '石材', desc: '修缮道观的石料，采石获得' },
+  { id: 'mao-cao', name: '茅草', desc: '修缮道观的草料，割草获得' },
 ];
+
+// ============ 序章：修缮道观与点化 ============
+// 道观有四处需要修缮，每处凑齐材料一次修好
+export const REPAIRS = [
+  { key: 'shanmen', name: '山门', need: [{ id: 'mu-cai', count: 5 }, { id: 'shi-cai', count: 3 }] },
+  { key: 'xianglu', name: '香炉', need: [{ id: 'shi-cai', count: 5 }] },
+  { key: 'sandian', name: '三清殿', need: [{ id: 'mu-cai', count: 10 }, { id: 'mao-cao', count: 8 }] },
+  { key: 'xiangfang', name: '厢房', need: [{ id: 'mu-cai', count: 5 }, { id: 'mao-cao', count: 5 }] },
+];
+
+// 把"需求材料"拼成给人看的话（如"木材×5 石材×3"）
+export function repairNeedText(spot) {
+  return spot.need.map((n) => {
+    const m = MATERIALS.find((x) => x.id === n.id);
+    return (m ? m.name : n.id) + '×' + n.count;
+  }).join(' ');
+}
+
+// 消耗背包里的材料：数量足够返回 true 并扣掉；不够返回 false（不会白扣）
+export function consumeItem(data, id, amount) {
+  const item = data.inventory.find((i) => i.id === id);
+  if (!item || item.count < amount) return false;
+  item.count -= amount;
+  return true;
+}
+
+// 修缮一处：材料齐 → 扣材料、记进度；不齐 → 返回缺什么
+export function submitRepair(data, key) {
+  const spot = REPAIRS.find((r) => r.key === key);
+  if (!spot) return { ok: false, msg: '没有这处地方' };
+  if (data.repair[key]) return { ok: false, msg: spot.name + '已经修好了' };
+  for (const n of spot.need) { // 先全部检查一遍，够了一次性扣
+    const item = data.inventory.find((i) => i.id === n.id);
+    if (!item || item.count < n.count) {
+      return { ok: false, msg: '材料不足：修' + spot.name + '还需 ' + repairNeedText(spot) };
+    }
+  }
+  for (const n of spot.need) consumeItem(data, n.id, n.count);
+  data.repair[key] = 1;
+  return { ok: true, msg: spot.name + '修缮完成！' };
+}
+
+// 四处都修好了吗？（都修好才能上香点化）
+export function allRepaired(data) {
+  return REPAIRS.every((r) => data.repair[r.key]);
+}
+
+// 点化神仙：五方五老按五行对应（东青木、南赤火、中黄土、西白金、北黑水）
+// 变异灵根由"本行之主"点化：雷=火之变→赤帝，冰=水之变→黑帝，风=木之变→青帝
+export function pointDeity(linggen) {
+  const MAP = {
+    '木': { name: '东方青帝', color: '#4caf50' },
+    '火': { name: '南方赤帝', color: '#ff7043' },
+    '土': { name: '中央黄帝', color: '#ffd54f' },
+    '金': { name: '西方白帝', color: '#eeeeee' },
+    '水': { name: '北方黑帝', color: '#4fc3f7' },
+    '雷': { name: '南方赤帝', color: '#ff7043' },
+    '冰': { name: '北方黑帝', color: '#4fc3f7' },
+    '风': { name: '东方青帝', color: '#4caf50' },
+  };
+  return MAP[linggen] || MAP['土'];
+}
+
+// 点化：揭晓天赋 + 神仙赐下馈赠（《吐纳心法》和 10 颗灵石）
+export function performDianHua(data) {
+  data.talentsRevealed = true;
+  addItem(data, 'tuna-xinfa');
+  addLingShi(data, 10);
+}
 
 // ============ 创建一名新玩家 ============
 export function createPlayerData() {
@@ -156,6 +228,12 @@ export function createPlayerData() {
     exp: 0, expToNext: 100,  // 经验值 / 当前境界升级所需经验
     realmIndex: 0,           // 当前境界在 ALL_REALMS 里的下标
 
+    // ---- 序章状态 ----
+    talentsRevealed: false,  // 点化前天赋保密（界面显示？？？），点化时揭晓
+    repair: { shanmen: 0, xianglu: 0, sandian: 0, xiangfang: 0 }, // 道观四处修缮进度：0 未修 / 1 已修
+    story: null,             // 剧情面板内容（GameScene 写入，界面显示）
+    interactHint: '',        // "按 F"交互提示（GameScene 每帧写入，界面显示）
+
     // ---- 技能状态 ----
     skillCooldowns: [0, 0, 0], // 每个技能的冷却结束时间（Date.now() 时间戳）
     buffs: {                    // 各种增益的结束时间
@@ -169,29 +247,23 @@ export function createPlayerData() {
       {
         id: 'mu-jian', name: '木剑', type: 'weapon', slot: 'weapon',
         grade: '凡品', equipped: true, count: 1,
-        desc: '寻常桃木剑，攻击 +5',
+        desc: '寻常桃木剑，攻击 +5（道观里捡到的遗物）',
         stats: { attack: 5 },
         appearance: { blade: '#b08d57' }, // 剑身颜色（背在身上的剑）
       },
       {
         id: 'cu-bu-yi', name: '粗布衣', type: 'armor', slot: 'body',
         grade: '凡品', equipped: true, count: 1,
-        desc: '粗麻织成的衣裳，护甲 +5',
+        desc: '粗麻织成的衣裳，护甲 +5（道观里捡到的遗物）',
         stats: { armor: 5 },
         appearance: { robe: '#f2efe6' }, // 袍子颜色（以后换别的法袍就会变色）
       },
       {
         id: 'cao-xie', name: '草鞋', type: 'armor', slot: 'feet',
         grade: '凡品', equipped: true, count: 1,
-        desc: '草编云履，行走轻便，护甲 +1',
+        desc: '草编云履，行走轻便，护甲 +1（道观里捡到的遗物）',
         stats: { armor: 1 },
         appearance: { shoes: '#c9a05a' }, // 鞋子颜色
-      },
-      {
-        id: 'tuna-xinfa', name: '《吐纳心法》', type: 'gongfa', slot: 'gongfa',
-        grade: '凡品', equipped: true, count: 1,
-        desc: '道家基础吐纳之术，内力上限 +20',
-        stats: { maxQi: 20 },
       },
       {
         id: 'huangting-canjuan', name: '《黄庭经·残卷》', type: 'gongfa', slot: 'gongfa',
@@ -308,6 +380,11 @@ export function castSkill(data, skillIndex) {
 
   const now = Date.now();
 
+  // 序章：点化前是凡人之躯，施展不了道法
+  if (!data.talentsRevealed) {
+    return { ok: false, msg: '尚未点化，凡人之躯施展不了道法' };
+  }
+
   // 检查冷却
   if (now < data.skillCooldowns[skillIndex]) {
     const left = Math.ceil((data.skillCooldowns[skillIndex] - now) / 1000);
@@ -355,8 +432,19 @@ export function addLingShi(data, amount) {
   if (lingShi) lingShi.count += amount;
 }
 
+// ============ 物品模板 ============
+// 不是材料的可获取物品（任务奖励、仙人馈赠）放这里
+export const ITEM_TEMPLATES = [
+  {
+    id: 'tuna-xinfa', name: '《吐纳心法》', type: 'gongfa', slot: 'gongfa',
+    grade: '凡品', count: 1,
+    desc: '道家基础吐纳之术，内力上限 +20',
+    stats: { maxQi: 20 },
+  },
+];
+
 // ============ 往背包加物品 ============
-// 背包里已经有这个物品 → 数量 +1；没有 → 按材料表新建一条
+// 背包里已经有这个物品 → 数量 +1；没有 → 先查材料表，再查物品模板
 export function addItem(data, id, amount = 1) {
   const item = data.inventory.find((i) => i.id === id);
   if (item) {
@@ -364,5 +452,9 @@ export function addItem(data, id, amount = 1) {
   } else {
     const m = MATERIALS.find((x) => x.id === id);
     if (m) data.inventory.push({ ...m, type: 'material', grade: '凡品', count: amount });
+    else {
+      const t = ITEM_TEMPLATES.find((x) => x.id === id);
+      if (t) data.inventory.push({ ...t });
+    }
   }
 }

@@ -83,6 +83,33 @@
       white-space: nowrap;
     }
 
+    /* ===== 交互提示（画面下方：按 F 修缮/采集/上香） ===== */
+    #interact {
+      position: absolute; bottom: 96px; left: 50%; transform: translateX(-50%);
+      background: rgba(20, 20, 20, .85); border: 1px solid #c9a227;
+      border-radius: 4px; padding: 5px 14px;
+      color: #ffe066; font-size: 14px; font-family: sans-serif;
+      white-space: nowrap;
+    }
+
+    /* ===== 剧情面板（点化等剧情，点击继续） ===== */
+    #story {
+      position: absolute; inset: 0;
+      display: none;
+      align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, .55);
+      cursor: pointer;
+    }
+    #story-box {
+      width: 520px; padding: 22px 26px; box-sizing: border-box;
+      background: rgba(15, 15, 15, .95);
+      border: 2px solid #c9a227; border-radius: 8px;
+      color: #eee; font-family: sans-serif;
+    }
+    #story-title { color: #ffd54f; font-size: 20px; margin-bottom: 12px; text-align: center; }
+    #story-text { font-size: 14px; line-height: 1.8; white-space: pre-line; }
+    #story-tip { margin-top: 14px; text-align: center; color: #999; font-size: 12px; }
+
     /* ===== 背包（按 B 开关，屏幕中间） ===== */
     #inventory {
       position: absolute; top: 50%; left: 50%;
@@ -135,7 +162,7 @@
         <!-- 状态栏 -->
         <div id="status">
           <span class="title" id="name">无名散修</span>
-          <span class="title">· <span id="phase">炼精化气</span> · <span id="realm">练气一层</span></span>
+          <span class="title">· <span id="phase">炼精化气</span></span><span class="title" id="realm-wrap"> · <span id="realm">练气一层</span></span>
           <div class="stat-row">气血 <span id="hp-text"></span></div>
           <div class="bar"><div class="bar-fill" id="hp-fill"></div></div>
           <div class="stat-row">内力 <span id="qi-text"></span></div>
@@ -149,6 +176,18 @@
         <!-- 提示条 -->
         <div id="toast"></div>
 
+        <!-- 交互提示（按 F 修缮/采集/上香） -->
+        <div id="interact"></div>
+
+        <!-- 剧情面板（点击继续） -->
+        <div id="story">
+          <div id="story-box">
+            <div id="story-title"></div>
+            <div id="story-text"></div>
+            <div id="story-tip">（点击继续）</div>
+          </div>
+        </div>
+
         <!-- 物品栏（5 格，由 ui.js 填充） -->
         <div id="hotbar"></div>
 
@@ -160,7 +199,7 @@
         </div>
 
         <!-- 操作提示 -->
-        <div id="hint">左键：攻击（按住连击） · WASD/方向键：移动 · B：背包</div>
+        <div id="hint">左键：攻击（按住连击） · WASD/方向键：移动 · F：采集/修缮/上香 · B：背包</div>
 
         <!-- 背包（按 B 开关，内容由 ui.js 渲染） -->
         <div id="inventory">

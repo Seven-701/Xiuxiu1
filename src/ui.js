@@ -72,6 +72,9 @@ el('skills').addEventListener('click', (e) => {
   if (slot) castByIndex(Number(slot.dataset.index));
 });
 
+// ============ 剧情面板：点击继续（关闭） ============
+el('story').addEventListener('click', () => { data().story = null; });
+
 // ============ 放技能 ============
 function castByIndex(index) {
   const result = castSkill(data(), index);
@@ -132,8 +135,14 @@ function refresh() {
 
   // --- 状态栏 ---
   el('name').textContent = d.name;
-  el('phase').textContent = phaseName(d);   // 大阶段：炼精化气
-  el('realm').textContent = realmName(d);   // 小境界：练气三层
+  if (d.talentsRevealed) {
+    el('phase').textContent = phaseName(d);   // 大阶段：炼精化气
+    el('realm-wrap').style.display = '';
+    el('realm').textContent = realmName(d);   // 小境界：练气三层
+  } else {
+    el('phase').textContent = '凡人';          // 序章：还没点化，境界显示凡人
+    el('realm-wrap').style.display = 'none';
+  }
   el('hp-fill').style.width = (d.hp / d.maxHp) * 100 + '%';
   el('hp-text').textContent = d.hp + '/' + d.maxHp;
   el('qi-fill').style.width = (d.qi / d.maxQi) * 100 + '%';
@@ -141,10 +150,18 @@ function refresh() {
   el('armor').textContent = d.armor + shieldArmorBonus(d); // 护甲 + 金光神咒加成
   el('attack').textContent = d.attack;
   el('exp').textContent = d.exp + '/' + d.expToNext;
-  el('linggen').textContent = d.talents.linggen + '灵根（' + d.talents.quality + '）';
-  el('wuxing').textContent = d.talents.wuxing;
-  el('gengu').textContent = d.talents.gengu;
-  el('fuyuan').textContent = d.talents.fuyuan;
+  // 天赋：点化前保密（显示？？？），点化后才揭晓
+  if (d.talentsRevealed) {
+    el('linggen').textContent = d.talents.linggen + '灵根（' + d.talents.quality + '）';
+    el('wuxing').textContent = d.talents.wuxing;
+    el('gengu').textContent = d.talents.gengu;
+    el('fuyuan').textContent = d.talents.fuyuan;
+  } else {
+    el('linggen').textContent = '？？？（修缮道观，点化后揭晓）';
+    el('wuxing').textContent = '？？？';
+    el('gengu').textContent = '？？？';
+    el('fuyuan').textContent = '？？？';
+  }
 
   // --- 物品栏：内容变了才重建 ---
   const hotbarSig = hotbarSignature(d);
@@ -177,6 +194,18 @@ function refresh() {
       lastInvSig = invSig;
       renderInventory();
     }
+  }
+
+  // --- 交互提示（GameScene 每帧写入：按 F 修缮/采集/上香） ---
+  el('interact').textContent = d.interactHint || '';
+
+  // --- 剧情面板：有内容就显示，点击关闭 ---
+  if (d.story) {
+    el('story').style.display = 'flex';
+    el('story-title').textContent = d.story.title;
+    el('story-text').textContent = d.story.text;
+  } else {
+    el('story').style.display = 'none';
   }
 }
 
